@@ -1,25 +1,49 @@
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener}};
+use futures::{SinkExt, StreamExt};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::broadcast::{self, Sender},
+};
+use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
+
+const HELP_MSG: &str = include_str!("help.txt");
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let server = TcpListener::bind("127.0.0.1:31888").await?;
+    let (tx, _) = broadcast::channel::<String>(32);
     loop {
-        let (mut tcp, cli) = server.accept().await?;
-        println!("@ accept {cli}");
-        let mut buffer = [0u8; 16];
-        loop {
-            let n = tcp.read(&mut buffer).await?;
-            if n == 0 {
-                break;
-            }
-            let _ = tcp.write_all(&buffer[..n]).await?;
+        let (tcp, _) = server.accept().await?;
+        tokio::spawn(handle_user(tcp, tx.clone()));
+    }
+}
 
-            let mut line = String::from_utf8(buffer[..n].to_vec())?;
-            line.pop();
-            line.pop();
-            line.push_str("❤️\n");
-            let _ = tcp.write_all(line.as_bytes()).await?;
+async fn handle_user(mut tcp: TcpStream, tx: Sender<String>) -> anyhow::Result<()> {
+    let (reader, writer) = tcp.split();
+    let mut stream = FramedRead::new(reader, LinesCodec::new());
+    let mut sink = FramedWrite::new(writer, LinesCodec::new());
+    let mut rx: broadcast::Receiver<String> = tx.subscribe();
+    sink.send(HELP_MSG).await?;
+    loop {
+        tokio::select! {
+            user_msg = stream.next() => {
+                let mut user_msg = match user_msg {
+                    Some(msg) => msg?,
+                    None => break,
+                };
+                if user_msg.starts_with("/help") {
+                    sink.send(HELP_MSG).await?;
+                    continue;
+                } else if user_msg.starts_with("/quit") {
+                    break;
+                } else {
+                    user_msg.push_str(" ❤️");
+                    let _ = tx.send(user_msg);
+                }
+            },
+            peer_msg = rx.recv() => {
+                sink.send(peer_msg?).await?;
+            }
         }
     }
-    // Ok(())
+    Ok(())
 }
