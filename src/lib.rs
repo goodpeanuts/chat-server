@@ -10,3 +10,13 @@ pub fn random_name() -> String {
     let animal = fastrand::choice(ANIMALS).unwrap();
     format!("{adjective}-{animal}")
 }
+
+#[macro_export]
+macro_rules! b {
+    ($result:expr) => {
+        match $result {
+            Ok(ok) => ok,
+            Err(err) => break Err(err.into()),
+        }
+    };
+}
